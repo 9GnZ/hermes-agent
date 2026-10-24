@@ -1123,7 +1123,11 @@ def _load_tools(agent, enabled_toolsets, disabled_toolsets):
     if drops := agent_tool_drops(agent):
         agent.tools = [t for t in agent.tools if t["function"]["name"] not in drops]
 
-    agent.valid_tool_names = {tool["function"]["name"] for tool in agent.tools} if agent.tools else set()
+    # A subagent's explicit, one-use in-process claim is the final build-time
+    # authority. Toolsets and refreshed registry catalogs cannot widen it.
+    from agent.worker_tool_policy import filter_worker_tool_definitions
+    agent.tools, agent.valid_tool_names = filter_worker_tool_definitions(agent, agent.tools or [])
+
     # Kanban guidance is session-static for the dispatcher-owned worker only. Profiles may
     # expose kanban_show interactively, and children/cron runs inherit the env var, without
     # owning a task.
@@ -1380,6 +1384,8 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=None):
 
     from agent.memory_manager_tools import inject_memory_provider_tools
     inject_memory_provider_tools(agent)
+    from agent.worker_tool_policy import filter_worker_tool_definitions
+    agent.tools, agent.valid_tool_names = filter_worker_tool_definitions(agent, agent.tools or [])
 
 
 def _apply_agent_section(agent, _agent_cfg):
@@ -2123,6 +2129,10 @@ def _inject_context_engine_tools(agent):
     # `platform_toolsets: telegram: []` would still leak lcm_* tools into the tool surface and incur the
     # same local-model latency penalty.
     agent._context_engine_tool_names: set = set()
+    from agent.worker_tool_policy import active_worker_tool_allowlist
+    worker_allowlist = (
+        active_worker_tool_allowlist(agent) if getattr(agent, "platform", None) == "subagent" else None
+    )
     if (
         agent.context_compressor
         and agent.tools is not None
@@ -2144,6 +2154,8 @@ def _inject_context_engine_tools(agent):
                 )
                 continue
             _tname = _schema["name"]
+            if worker_allowlist is not None and _tname not in worker_allowlist:
+                continue
             if _tname in _existing_tool_names:
                 continue  # already registered via plugin/cache path
             agent.tools.append({"type": "function", "function": _schema})
@@ -2284,6 +2296,8 @@ def init_agent(
     requested_provider: str | None = None, capabilities: Optional[dict[str, bool]] = None, cwd: Optional[str] = None,
     side_agent: bool = False, memory_manager=None,
     tool_result_metadata_callback: Optional[Callable[..., dict]] = None,
+    worker_tool_authorization=None, worker_task_id: str | None = None,
+    worker_principal_id: str | None = None, worker_resource_scope=None,
 ):
     from agent.safe_worker_policy import safe_worker_enabled
 
@@ -2297,6 +2311,20 @@ def init_agent(
     _params = locals()
     for _name in _PASSTHROUGH_PARAMS:
         setattr(agent, _name, _params[_name])
+    agent.worker_tool_allowlist = None
+    if platform == "subagent":
+        from agent.worker_tool_policy import attach_worker_tool_authorization
+        attached = attach_worker_tool_authorization(
+            agent, worker_tool_authorization, task_id=worker_task_id, principal_id=worker_principal_id,
+            permitted_resources=worker_resource_scope,
+        )
+        if not attached:
+            # Missing, malformed, expired, replayed, or identity-mismatched claims
+            # leave this Worker with no effective tools.
+            agent.worker_tool_authorization = None
+            agent.worker_tool_allowlist = frozenset()
+    elif worker_tool_authorization is not None:
+        raise ValueError("worker authorization is only valid for delegated subagents")
     for _name in _GATEWAY_IDENTITY_PARAMS:
         setattr(agent, f"_{_name}", _params[_name])
     agent.session_cwd = cwd or None

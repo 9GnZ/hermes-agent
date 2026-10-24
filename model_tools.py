@@ -702,6 +702,13 @@ def _dispatch_bridge_tool(function_name: str, function_args: dict[str, Any],
                                             quiet_mode=True, skip_tool_search_assembly=True) or []
     except Exception:
         current_defs = []
+    from agent.worker_tool_policy import current_worker_tool_policy, worker_tool_is_allowed
+    worker_policy = current_worker_tool_policy()
+    if worker_policy is not None:
+        current_defs = [
+            definition for definition in current_defs
+            if worker_tool_is_allowed((definition.get("function") or {}).get("name"), worker_policy)
+        ]
     args = function_args or {}
     from tools.managed_gateway_identity import CallRef
     call = CallRef(turn_id=ids.turn_id, tool_call_id=ids.tool_call_id) if ids else None
@@ -873,6 +880,12 @@ def handle_function_call(
         function_args = {}
     trace = list(tool_request_middleware_trace or [])
     function_name = _LEGACY_TOOL_ALIASES.get(function_name, function_name)
+    from agent.worker_tool_policy import current_worker_tool_policy, worker_tool_is_allowed
+    worker_policy = current_worker_tool_policy()
+    if worker_policy is not None and not worker_tool_is_allowed(function_name, worker_policy):
+        return tool_error(f"Tool '{function_name}' is outside this Worker's effective allowlist.")
+    if worker_policy is not None and enabled_tools is None:
+        enabled_tools = list(worker_policy.permitted_tools)
     ids = _CallIds(task_id, session_id, tool_call_id, turn_id, api_request_id)
     start = time.monotonic()
 

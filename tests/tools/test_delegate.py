@@ -32,6 +32,8 @@ from hermes_state import SessionDB
 
 def _make_mock_parent(depth=0):
     """Create a mock parent agent with the fields delegate_task expects."""
+    from toolsets import TOOLSETS
+
     parent = MagicMock()
     parent.base_url = "https://openrouter.ai/api/v1"
     parent.api_key="***"
@@ -39,6 +41,16 @@ def _make_mock_parent(depth=0):
     parent.api_mode = "chat_completions"
     parent.model = "anthropic/claude-sonnet-4"
     parent.platform = "cli"
+    # Match a loaded parent session: its enabled profile and exact effective
+    # tool names are separate inputs to child permission intersection.
+    parent.enabled_toolsets = None
+    parent.disabled_toolsets = []
+    parent.valid_tool_names = {
+        tool_name
+        for definition in TOOLSETS.values()
+        for tool_name in definition.get("tools", ())
+        if isinstance(tool_name, str)
+    }
     parent.providers_allowed = None
     parent.providers_ignored = None
     parent.providers_order = None
@@ -1692,6 +1704,8 @@ _SENTINEL = object()
 
 def _make_role_mock_child():
     """Helper: mock child with minimal fields for delegate_task to process."""
+    from toolsets import TOOLSETS
+
     mock_child = MagicMock()
     mock_child.run_conversation.return_value = {
         "final_response": "done", "completed": True,
@@ -1702,6 +1716,13 @@ def _make_role_mock_child():
     mock_child.session_prompt_tokens = 0
     mock_child.session_completion_tokens = 0
     mock_child.model = "test"
+    mock_child.valid_tool_names = {
+        tool_name
+        for definition in TOOLSETS.values()
+        for tool_name in definition.get("tools", ())
+        if isinstance(tool_name, str)
+    }
+    mock_child.disabled_toolsets = []
     return mock_child
 
 
@@ -1723,7 +1744,9 @@ class TestOrchestratorRoleBehavior(unittest.TestCase):
             "api_key": None, "api_mode": None, "model": None,
         }
         parent = _make_mock_parent(depth=0)
-        parent.enabled_toolsets = ["terminal", "file"]
+        # Orchestrator delegation is retained only when the parent itself has
+        # that exact permission; role selection must not widen the grant.
+        parent.enabled_toolsets = ["terminal", "file", "delegation"]
         with patch("run_agent.AIAgent") as MockAgent:
             mock_child = _make_role_mock_child()
             MockAgent.return_value = mock_child

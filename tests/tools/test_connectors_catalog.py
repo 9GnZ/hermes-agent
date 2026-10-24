@@ -120,8 +120,15 @@ def test_only_a_desktop_session_carries_the_tool():
 
 
 def _desktop_child_toolsets():
+    import model_tools
     from tools.delegate_tool_toolsets import _resolve_child_toolsets
-    parent = SimpleNamespace(enabled_toolsets=["catalog", "web"], disabled_toolsets=None)
+    enabled = ["catalog", "web"]
+    parent = SimpleNamespace(
+        enabled_toolsets=enabled,
+        disabled_toolsets=None,
+        valid_tool_names=model_tools._select_tool_names(enabled, None, quiet_mode=True),
+        platform="desktop",
+    )
     return _resolve_child_toolsets(parent, None, "leaf")
 
 

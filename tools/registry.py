@@ -929,6 +929,16 @@ class ToolRegistry:
         self, name: str, args: dict, *, scope: Optional[str] = None, **kwargs) -> str | dict:
         """Execute a tool handler by name: async handlers bridged via ``_run_async()``,
         results normalized, every exception returned as ``{"error": ...}``."""
+        # Last shared in-process boundary, including handler-to-registry calls
+        # that bypass model_tools and MCP's model-visible tool list.
+        from agent.worker_tool_policy import current_worker_tool_policy, worker_tool_is_allowed
+        policy = current_worker_tool_policy()
+        if policy is not None and not worker_tool_is_allowed(name, policy):
+            return tool_error(f"Tool '{name}' is outside this Worker's effective allowlist.")
+        if policy is not None and name == "execute_code" and kwargs.get("enabled_tools") is None:
+            # Direct/nested registry calls must not fall back to the process-global
+            # sandbox tool list when a Worker grant is active.
+            kwargs["enabled_tools"] = list(policy.permitted_tools)
         entry = self.get_entry(name, scope=scope)
         if not entry:
             return tool_error(f"Unknown tool: {name}")

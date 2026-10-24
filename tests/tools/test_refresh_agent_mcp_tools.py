@@ -22,8 +22,12 @@ def _tool(name):
     return {"type": "function", "function": {"name": name, "description": "", "parameters": {}}}
 
 
+class _Agent:
+    pass
+
+
 def _agent(tool_names, *, enabled=None, disabled=None):
-    a = types.SimpleNamespace()
+    a = _Agent()
     a.tools = [_tool(n) for n in tool_names]
     a.valid_tool_names = set(tool_names)
     a.enabled_toolsets = enabled
@@ -56,6 +60,67 @@ def test_refresh_adds_late_landing_tools(monkeypatch):
 
     assert "manage_connections" not in side.valid_tool_names
     assert "manage_connections" not in [t["function"]["name"] for t in side.tools]
+
+
+def test_worker_refresh_and_context_injection_cannot_add_ungranted_tools(monkeypatch):
+    from agent.worker_tool_policy import attach_worker_tool_authorization, issue_worker_tool_authorization
+
+    worker = _agent(["read_file"], enabled=["file"])
+    worker.platform = "subagent"
+    worker.worker_task_id = "task-refresh"
+    worker.worker_principal_id = "parent-refresh"
+    claim = issue_worker_tool_authorization(
+        task_id=worker.worker_task_id, principal_id=worker.worker_principal_id,
+        permitted_tools=("read_file",), permitted_resources=("workspace:C:/dev",), ttl_seconds=60,
+    )
+    worker.worker_resource_scope = claim.permitted_resources
+    assert attach_worker_tool_authorization(
+        worker, claim, task_id=worker.worker_task_id, principal_id=worker.worker_principal_id,
+        permitted_resources=worker.worker_resource_scope,
+    )
+    worker.context_compressor = types.SimpleNamespace(
+        get_tool_schemas=lambda: [{"name": "lcm_grep", "description": "", "parameters": {}}],
+    )
+
+    import model_tools
+    monkeypatch.setattr(
+        model_tools, "get_tool_definitions",
+        lambda **kw: [_tool("read_file"), _tool("write_file"), _tool("mcp_late_worker_tool")],
+    )
+    staged, names = list(worker.tools), set(worker.valid_tool_names)
+    _mcp_agent._reinject_post_build_tools(worker, staged, names)
+
+    _mcp_agent.refresh_agent_mcp_tools(worker)
+
+    assert worker.valid_tool_names == {"read_file"}
+    assert [item["function"]["name"] for item in worker.tools] == ["read_file"]
+
+
+def test_worker_tool_prefix_restore_cannot_reintroduce_disallowed_tool(monkeypatch):
+    from agent.worker_tool_policy import attach_worker_tool_authorization, issue_worker_tool_authorization
+    from tools.registry import registry
+
+    worker = _agent(["read_file"], enabled=["file"])
+    worker.platform = "subagent"
+    worker.worker_task_id = "task-prefix"
+    worker.worker_principal_id = "parent-prefix"
+    claim = issue_worker_tool_authorization(
+        task_id=worker.worker_task_id, principal_id=worker.worker_principal_id,
+        permitted_tools=("read_file",), permitted_resources=(), ttl_seconds=60,
+    )
+    worker.worker_resource_scope = claim.permitted_resources
+    assert attach_worker_tool_authorization(
+        worker, claim, task_id=worker.worker_task_id, principal_id=worker.worker_principal_id,
+        permitted_resources=worker.worker_resource_scope,
+    )
+    entry = types.SimpleNamespace(name="write_file", schema={"name": "write_file"})
+    monkeypatch.setattr(registry, "get_all_entries", lambda: [entry])
+    monkeypatch.setattr(registry, "get_entry", lambda name, scope=None: entry if name == "write_file" else None)
+
+    _mcp_agent.restore_agent_tool_prefix(worker, ["read_file", "write_file"])
+
+    assert worker.valid_tool_names == {"read_file"}
+    assert "write_file" not in [item["function"]["name"] for item in worker.tools]
 
 
 def test_refresh_preserves_memory_provider_and_context_engine_tools(monkeypatch):

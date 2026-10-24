@@ -709,6 +709,11 @@ def _dispatch_authorized_once(
             callback()
 
     block_message, block_error_type = scope_block, "tool_scope_block"
+    if getattr(agent, "platform", None) == "subagent":
+        from agent.worker_tool_policy import active_worker_tool_allowlist
+        if ref.name not in active_worker_tool_allowlist(agent):
+            block_message = f"Tool '{ref.name}' is outside this Worker's effective allowlist."
+            block_error_type = "worker_tool_policy"
     if block_message is None:
         block_error_type = "plugin_block"
         resolve = lambda: _pre_tool_block(agent, ref)
@@ -753,7 +758,10 @@ def _dispatch_authorized_once(
     _advance_start_order(lambda: _begin_tool_execution(agent, ref, display_index))
     from agent.tool_progress_relay import bound_tool_progress
     from tools.connectors.data_use import collect_data_use
-    with bound_tool_progress(agent.tool_progress_callback, ref.name, ref.call_id), collect_data_use() as data_use:
+    from agent.worker_tool_policy import worker_tool_policy_scope
+    with worker_tool_policy_scope(agent), bound_tool_progress(
+        agent.tool_progress_callback, ref.name, ref.call_id,
+    ), collect_data_use() as data_use:
         try:
             return _run_with_activity_heartbeat(agent, ref.name, lambda: execute(ref.args))
         finally:
@@ -1726,7 +1734,7 @@ def _resolve_sequential_dispatch(agent, ref: _ToolCallRef, messages: list) -> _S
                 session_id=agent.session_id or "",
                 turn_id=getattr(agent, "_current_turn_id", "") or "",
                 api_request_id=getattr(agent, "_current_api_request_id", "") or "",
-                enabled_tools=list(agent.valid_tool_names) if agent.valid_tool_names else None,
+                enabled_tools=list(agent.valid_tool_names or ()),
                 skip_pre_tool_call_hook=True,
                 skip_tool_request_middleware=True,
                 skip_tool_execution_middleware=True,

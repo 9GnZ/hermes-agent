@@ -52,7 +52,8 @@ from tools.delegate_tool_tasks import (
 )
 from tools.delegate_tool_tuning import pin_child_service_tier
 from tools.delegate_tool_toolsets import (
-    DELEGATE_BLOCKED_TOOLS, _expand_parent_toolsets, _resolve_child_toolsets, _strip_blocked_tools,
+    DELEGATE_BLOCKED_TOOLS, _expand_parent_toolsets, _resolve_child_tool_permissions,
+    _resolve_child_toolsets, _strip_blocked_tools,
 )
 from tools.delegate_tool_results import (
     _apply_summary_budget, _build_child_preserving_parent_tools, _run_child_lifecycle, _summarize_tool_arguments,
@@ -253,7 +254,23 @@ def _build_child_agent(
     # global. Only fallback policy follows the owner of a per-call route such
     # as auxiliary.review.
     delegation_cfg = _load_config()
-    child_toolsets, child_disabled_toolsets = _resolve_child_toolsets(parent_agent, toolsets, effective_role)
+    child_toolsets, child_disabled_toolsets, child_tool_names = _resolve_child_tool_permissions(
+        parent_agent, toolsets, effective_role,
+    )
+    parent_principal_id = parent_subagent_id or getattr(parent_agent, "session_id", None)
+    workspace = _resolve_workspace_hint(parent_agent)
+    resource_scope = frozenset({f"workspace:{Path(workspace).resolve()}"}) if workspace else frozenset()
+    from tools.delegate_tool_config import _get_child_timeout
+    from agent.worker_tool_policy import issue_worker_tool_authorization
+    configured_ttl = _get_child_timeout()
+    policy_ttl = min(24 * 60 * 60, max(30, configured_ttl)) if configured_ttl else 60 * 60
+    worker_authorization = issue_worker_tool_authorization(
+        task_id=subagent_id,
+        principal_id=parent_principal_id if isinstance(parent_principal_id, str) else "",
+        permitted_tools=child_tool_names,
+        permitted_resources=resource_scope,
+        ttl_seconds=policy_ttl,
+    )
     child_prompt = _build_child_system_prompt(
         goal, context, workspace_path=_resolve_workspace_hint(parent_agent), role=effective_role,
         max_spawn_depth=max_spawn, child_depth=child_depth,
@@ -294,6 +311,8 @@ def _build_child_agent(
                     **rt, max_iterations=max_iterations, prefill_messages=getattr(parent_agent, "prefill_messages", None),
                     enabled_toolsets=child_toolsets, disabled_toolsets=child_disabled_toolsets, quiet_mode=True,
                     ephemeral_system_prompt=child_prompt, log_prefix=f"[subagent-{task_index}]", platform="subagent",
+                    worker_tool_authorization=worker_authorization, worker_task_id=subagent_id,
+                    worker_principal_id=parent_principal_id, worker_resource_scope=resource_scope,
                     side_agent=True,
                     skip_context_files=True, skip_memory=True, clarify_callback=None,
                     thinking_callback=(

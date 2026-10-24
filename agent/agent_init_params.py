@@ -10,6 +10,8 @@ _PASSTHROUGH_PARAMS = (
     "provider_require_parameters", "provider_data_collection", "openrouter_min_coding_score",
     # Toolset filtering
     "enabled_toolsets", "disabled_toolsets",
+    # Delegated worker execution policy (in-process, exact-name allowlist).
+    "worker_tool_authorization", "worker_task_id", "worker_principal_id", "worker_resource_scope",
     # Model response configuration (None = provider/model default)
     "max_tokens", "reasoning_config", "service_tier",
     "side_agent",

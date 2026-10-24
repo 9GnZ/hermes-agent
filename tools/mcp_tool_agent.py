@@ -79,6 +79,9 @@ def _publish_tool_snapshot(
         if prefix_registered is not None:
             new_defs, new_names = _merge_preserving_prefix(current_defs, new_defs, prefix_registered)
         new_defs, new_names = _drop_session_tools(agent, new_defs, new_names)
+        from agent.worker_tool_policy import filter_worker_tool_definitions
+        new_defs, new_names = filter_worker_tool_definitions(agent, new_defs)
+        staged_engine_names.intersection_update(new_names)
         # Record the generation even when unchanged so an in-flight older caller can't clobber.
         agent._tool_snapshot_generation = max(published_gen, snapshot_generation)
         # Same name set: nothing to publish, unless the caller is content_aware
@@ -267,6 +270,8 @@ def restore_agent_tool_prefix(agent, saved) -> bool:
     merged_names = {_def_name(t) for t in merged}
     _reinject_authorized_dynamic_tools(agent, merged, merged_names)
     merged, merged_names = _drop_session_tools(agent, merged, merged_names)
+    from agent.worker_tool_policy import filter_worker_tool_definitions
+    merged, merged_names = filter_worker_tool_definitions(agent, merged)
     changed = merged != fresh_defs
     if changed:
         with _agent_tools_lock:

@@ -2518,6 +2518,9 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
     )
     if not isinstance(function_args, dict):
         function_args = {}
+    from agent.worker_tool_policy import active_worker_tool_allowlist
+    if getattr(agent, "platform", None) == "subagent" and function_name not in active_worker_tool_allowlist(agent):
+        return json.dumps({"error": f"Tool '{function_name}' is outside this Worker's effective allowlist."})
     hook_ids = tool_hook_ids(agent, effective_task_id, tool_call_id)
     _tool_middleware_trace = list(tool_request_middleware_trace or [])
     try:
